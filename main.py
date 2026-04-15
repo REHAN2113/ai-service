@@ -4,6 +4,7 @@ import logging
 import time
 import numpy as np
 import requests
+import face_recognition
 from PIL import Image
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +23,7 @@ logger = logging.getLogger("snapfind-ai")
 app = FastAPI(
     title="SnapFind AI - Face Processing Service",
     version="1.0.0",
-    description="DeepFace-powered face detection and embedding extraction",
+    description="Face recognition-powered face detection and embedding extraction",
 )
 
 app.add_middleware(
@@ -44,25 +45,16 @@ class ModelManager:
 
     def ensure_loaded(self):
         if not self._model_loaded:
-            logger.info("Loading DeepFace model (first use)...")
+            logger.info("Loading face_recognition model (first use)...")
             start = time.time()
             try:
-                from deepface import DeepFace
-                # Warm up with a dummy image to pre-load weights
-                dummy = np.zeros((100, 100, 3), dtype=np.uint8)
-                dummy_img = Image.fromarray(dummy)
-                buf = io.BytesIO()
-                dummy_img.save(buf, format="PNG")
-                buf.seek(0)
+                # Pre-load the model by processing a dummy image
+                dummy = np.zeros((50, 50, 3), dtype=np.uint8)
                 try:
-                    DeepFace.represent(
-                        img_path=np.array(dummy_img),
-                        model_name="Facenet",
-                        enforce_detection=False,
-                        detector_backend="opencv",
-                    )
+                    # This initializes the dlib model in memory
+                    face_recognition.face_encodings(dummy)
                 except Exception:
-                    pass  # Expected for dummy image
+                    pass  # Expected for empty/invalid image
                 self._model_loaded = True
                 elapsed = time.time() - start
                 logger.info(f"Model loaded in {elapsed:.2f}s")
@@ -71,15 +63,31 @@ class ModelManager:
                 raise
 
     def extract_faces(self, image_array: np.ndarray):
+        """Extract faces and their embeddings from an image."""
         self.ensure_loaded()
-        from deepface import DeepFace
-
-        results = DeepFace.represent(
-            img_path=image_array,
-            model_name="Facenet",
-            enforce_detection=False,
-            detector_backend="opencv",
-        )
+        
+        # Detect face locations and encodings
+        face_locations = face_recognition.face_locations(image_array)
+        face_encodings = face_recognition.face_encodings(image_array, face_locations)
+        
+        results = []
+        for (top, right, bottom, left), encoding in zip(face_locations, face_encodings):
+            # Convert face location format from (top, right, bottom, left) to (x, y, w, h)
+            x = left
+            y = top
+            w = right - left
+            h = bottom - top
+            
+            results.append({
+                "embedding": encoding.tolist(),
+                "facial_area": {
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                }
+            })
+        
         return results
 
 model_manager = ModelManager()
